@@ -42,6 +42,8 @@ class _ProductListPageState extends State<ProductListPage> {
   final TextEditingController _searchController = TextEditingController();
   final TextEditingController _minPriceController = TextEditingController();
   final TextEditingController _maxPriceController = TextEditingController();
+
+  // form controllers for add/edit
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _priceController = TextEditingController();
   final TextEditingController _categoryController = TextEditingController();
@@ -49,6 +51,7 @@ class _ProductListPageState extends State<ProductListPage> {
   String _searchQuery = '';
   double? _minPrice;
   double? _maxPrice;
+  bool _showFilters = false;
 
   @override
   void dispose() {
@@ -61,46 +64,89 @@ class _ProductListPageState extends State<ProductListPage> {
     super.dispose();
   }
 
-  Stream<QuerySnapshot> _getFilteredProducts() {
-    Query query = _products.orderBy('name');
-    if (_searchQuery.isNotEmpty) {
-      query = query
-          .where('name', isGreaterThanOrEqualTo: _searchQuery)
-          .where('name', isLessThanOrEqualTo: _searchQuery + '\uf8ff');
+  Future<void> _deleteProduct(String productId) async {
+    try {
+      // delete the product from Firestore
+      await _products.doc(productId).delete();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Product deleted successfully!'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error deleting product: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
-    if (_minPrice != null) {
-      query = query.where('price', isGreaterThanOrEqualTo: _minPrice);
-    }
-    if (_maxPrice != null) {
-      query = query.where('price', isLessThanOrEqualTo: _maxPrice);
-    }
-    return query.snapshots();
   }
 
   Future<void> _addProduct() async {
-    if (_nameController.text.trim().isEmpty) return;
-    final price = double.tryParse(_priceController.text.trim());
-    if (price == null || price <= 0) return;
+    if (_nameController.text.trim().isEmpty) {
+      _showError('Please enter a product name');
+      return;
+    }
 
-    await _products.add({
-      'name': _nameController.text.trim(),
-      'price': price,
-      'category': _categoryController.text.trim().isEmpty
-          ? 'Uncategorized'
-          : _categoryController.text.trim(),
-      'createdAt': FieldValue.serverTimestamp(),
-    });
-    _nameController.clear();
-    _priceController.clear();
-    _categoryController.clear();
-    if (mounted) Navigator.pop(context);
+    if (_priceController.text.trim().isEmpty) {
+      _showError('Please enter a product price');
+      return;
+    }
+
+    double? price;
+    try {
+      price = double.parse(_priceController.text.trim());
+      if (price <= 0) {
+        _showError('Price must be greater than 0');
+        return;
+      }
+    } catch (e) {
+      _showError('Please enter a valid price');
+      return;
+    }
+
+    try {
+      await _products.add({
+        'name': _nameController.text.trim(),
+        'price': price,
+        'category': _categoryController.text.trim().isNotEmpty
+            ? _categoryController.text.trim()
+            : 'Uncategorized',
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+
+      // Clear form
+      _nameController.clear();
+      _priceController.clear();
+      _categoryController.clear();
+
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Product added successfully!'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      _showError('Error adding product: $e');
+    }
   }
 
-  Future<void> _updateProduct(
-      String id, String name, double price, String category) async {
-    _nameController.text = name;
-    _priceController.text = price.toString();
-    _categoryController.text = category;
+  // update Product
+  Future<void> _updateProduct(String productId, String oldName, double oldPrice,
+      String oldCategory) async {
+    _nameController.text = oldName;
+    _priceController.text = oldPrice.toString();
+    _categoryController.text = oldCategory;
 
     await showDialog(
       context: context,
@@ -110,33 +156,77 @@ class _ProductListPageState extends State<ProductListPage> {
           mainAxisSize: MainAxisSize.min,
           children: [
             TextField(
-                controller: _nameController,
-                decoration: const InputDecoration(labelText: 'Name')),
+              controller: _nameController,
+              decoration: const InputDecoration(
+                labelText: 'Product Name',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 10),
             TextField(
-                controller: _priceController,
-                decoration: const InputDecoration(labelText: 'Price'),
-                keyboardType: TextInputType.number),
+              controller: _priceController,
+              decoration: const InputDecoration(
+                labelText: 'Price',
+                border: OutlineInputBorder(),
+                prefixText: '\$',
+              ),
+              keyboardType: TextInputType.number,
+            ),
+            const SizedBox(height: 10),
             TextField(
-                controller: _categoryController,
-                decoration: const InputDecoration(labelText: 'Category')),
+              controller: _categoryController,
+              decoration: const InputDecoration(
+                labelText: 'Category',
+                border: OutlineInputBorder(),
+              ),
+            ),
           ],
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel')),
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
           ElevatedButton(
             onPressed: () async {
-              final newPrice = double.tryParse(_priceController.text.trim());
-              if (newPrice == null || newPrice <= 0) return;
-              await _products.doc(id).update({
-                'name': _nameController.text.trim(),
-                'price': newPrice,
-                'category': _categoryController.text.trim().isEmpty
-                    ? 'Uncategorized'
-                    : _categoryController.text.trim(),
-              });
-              if (mounted) Navigator.pop(context);
+              if (_nameController.text.trim().isEmpty) {
+                _showError('Please enter a product name');
+                return;
+              }
+
+              double? price;
+              try {
+                price = double.parse(_priceController.text.trim());
+                if (price <= 0) {
+                  _showError('Price must be greater than 0');
+                  return;
+                }
+              } catch (e) {
+                _showError('Please enter a valid price');
+                return;
+              }
+
+              try {
+                await _products.doc(productId).update({
+                  'name': _nameController.text.trim(),
+                  'price': price,
+                  'category': _categoryController.text.trim().isNotEmpty
+                      ? _categoryController.text.trim()
+                      : 'Uncategorized',
+                });
+
+                if (mounted) {
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Product updated successfully!'),
+                      backgroundColor: Colors.green,
+                    ),
+                  );
+                }
+              } catch (e) {
+                _showError('Error updating product: $e');
+              }
             },
             child: const Text('Update'),
           ),
@@ -145,8 +235,36 @@ class _ProductListPageState extends State<ProductListPage> {
     );
   }
 
-  Future<void> _deleteProduct(String id) async {
-    await _products.doc(id).delete();
+  // FILTER FUNCTIONALITY
+  Stream<QuerySnapshot> _getFilteredProducts() {
+    Query query = _products;
+
+    if (_searchQuery.isNotEmpty) {
+      query = query
+          .where('name', isGreaterThanOrEqualTo: _searchQuery)
+          .where('name', isLessThanOrEqualTo: _searchQuery + '\uf8ff');
+    }
+
+    // price range filter
+    if (_minPrice != null) {
+      query = query.where('price', isGreaterThanOrEqualTo: _minPrice);
+    }
+    if (_maxPrice != null) {
+      query = query.where('price', isLessThanOrEqualTo: _maxPrice);
+    }
+
+    query = query.orderBy('name');
+
+    return query.snapshots();
+  }
+
+  void _showError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.red,
+      ),
+    );
   }
 
   void _resetFilters() {
@@ -160,6 +278,59 @@ class _ProductListPageState extends State<ProductListPage> {
     });
   }
 
+  void _showAddProductDialog() {
+    _nameController.clear();
+    _priceController.clear();
+    _categoryController.clear();
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Add New Product'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _nameController,
+              decoration: const InputDecoration(
+                labelText: 'Product Name *',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _priceController,
+              decoration: const InputDecoration(
+                labelText: 'Price *',
+                border: OutlineInputBorder(),
+                prefixText: '\$',
+              ),
+              keyboardType: TextInputType.number,
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _categoryController,
+              decoration: const InputDecoration(
+                labelText: 'Category',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: _addProduct,
+            child: const Text('Add'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -167,93 +338,259 @@ class _ProductListPageState extends State<ProductListPage> {
         title: const Text('Product Manager'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.filter_alt),
-            onPressed: () => setState(() {}),
+            icon: Icon(
+                _showFilters ? Icons.filter_alt : Icons.filter_alt_outlined),
+            onPressed: () => setState(() => _showFilters = !_showFilters),
+            tooltip: 'Toggle Filters',
           ),
         ],
       ),
       body: Column(
         children: [
+          // Search Bar
           Padding(
             padding: const EdgeInsets.all(8.0),
             child: TextField(
               controller: _searchController,
-              decoration: const InputDecoration(
-                hintText: 'Search...',
-                prefixIcon: Icon(Icons.search),
-                border: OutlineInputBorder(),
+              decoration: InputDecoration(
+                hintText: 'Search products...',
+                prefixIcon: const Icon(Icons.search),
+                suffixIcon: _searchQuery.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.clear),
+                        onPressed: () {
+                          setState(() {
+                            _searchQuery = '';
+                            _searchController.clear();
+                          });
+                        },
+                      )
+                    : null,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
               ),
-              onChanged: (value) => setState(() => _searchQuery = value),
+              onChanged: (value) {
+                setState(() {
+                  _searchQuery = value;
+                });
+              },
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8.0),
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _minPriceController,
-                    decoration: const InputDecoration(
-                        labelText: 'Min Price', border: OutlineInputBorder()),
-                    keyboardType: TextInputType.number,
-                    onChanged: (value) =>
-                        setState(() => _minPrice = double.tryParse(value)),
-                  ),
+
+          // filter section
+          if (_showFilters)
+            Card(
+              margin: const EdgeInsets.all(8.0),
+              child: Padding(
+                padding: const EdgeInsets.all(12.0),
+                child: Column(
+                  children: [
+                    const Text(
+                      'Price Range Filter',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: _minPriceController,
+                            decoration: const InputDecoration(
+                              labelText: 'Min Price',
+                              border: OutlineInputBorder(),
+                              prefixText: '\$',
+                            ),
+                            keyboardType: TextInputType.number,
+                            onChanged: (value) {
+                              setState(() {
+                                _minPrice = value.isNotEmpty
+                                    ? double.tryParse(value)
+                                    : null;
+                              });
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: TextField(
+                            controller: _maxPriceController,
+                            decoration: const InputDecoration(
+                              labelText: 'Max Price',
+                              border: OutlineInputBorder(),
+                              prefixText: '\$',
+                            ),
+                            keyboardType: TextInputType.number,
+                            onChanged: (value) {
+                              setState(() {
+                                _maxPrice = value.isNotEmpty
+                                    ? double.tryParse(value)
+                                    : null;
+                              });
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    ElevatedButton.icon(
+                      onPressed: _resetFilters,
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Reset Filters'),
+                      style: ElevatedButton.styleFrom(
+                        minimumSize: const Size(double.infinity, 40),
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: TextField(
-                    controller: _maxPriceController,
-                    decoration: const InputDecoration(
-                        labelText: 'Max Price', border: OutlineInputBorder()),
-                    keyboardType: TextInputType.number,
-                    onChanged: (value) =>
-                        setState(() => _maxPrice = double.tryParse(value)),
-                  ),
-                ),
-                IconButton(
-                    onPressed: _resetFilters, icon: const Icon(Icons.refresh)),
-              ],
+              ),
             ),
-          ),
+
+          // Products with Streambuilder
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
               stream: _getFilteredProducts(),
               builder: (context, snapshot) {
-                if (snapshot.hasError)
-                  return Center(child: Text('Error: ${snapshot.error}'));
-                if (!snapshot.hasData)
-                  return const Center(child: CircularProgressIndicator());
+                if (snapshot.hasError) {
+                  return Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(Icons.error_outline,
+                            size: 48, color: Colors.red),
+                        const SizedBox(height: 16),
+                        Text('Error: ${snapshot.error}'),
+                      ],
+                    ),
+                  );
+                }
 
-                final products = snapshot.data!.docs;
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(
+                    child: CircularProgressIndicator(),
+                  );
+                }
+
+                final products = snapshot.data?.docs ?? [];
+
                 if (products.isEmpty) {
-                  return const Center(child: Text('No products found'));
+                  return Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.inventory_2_outlined,
+                          size: 64,
+                          color: Colors.grey[400],
+                        ),
+                        const SizedBox(height: 16),
+                        Text(
+                          'No products found',
+                          style: TextStyle(
+                            fontSize: 18,
+                            color: Colors.grey[600],
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        if (_searchQuery.isNotEmpty ||
+                            _minPrice != null ||
+                            _maxPrice != null)
+                          TextButton(
+                            onPressed: _resetFilters,
+                            child: const Text('Clear filters'),
+                          ),
+                      ],
+                    ),
+                  );
                 }
 
                 return ListView.builder(
+                  padding: const EdgeInsets.all(8.0),
                   itemCount: products.length,
                   itemBuilder: (context, index) {
                     final product = products[index];
+                    final productId = product.id;
+                    final productName = product['name'] ?? 'No Name';
+                    final productPrice = product['price']?.toDouble() ?? 0.0;
+                    final productCategory =
+                        product['category'] ?? 'Uncategorized';
+
                     return Card(
+                      margin: const EdgeInsets.only(bottom: 8),
                       child: ListTile(
-                        title: Text(product['name']),
-                        subtitle: Text(
-                            '\$${product['price']} - ${product['category']}'),
+                        leading: CircleAvatar(
+                          backgroundColor: Colors.blue.shade100,
+                          child: Text(
+                            productName.isNotEmpty
+                                ? productName[0].toUpperCase()
+                                : '?',
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                        title: Text(
+                          productName,
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Price: \$${productPrice.toStringAsFixed(2)}'),
+                            if (productCategory != 'Uncategorized')
+                              Text(
+                                'Category: $productCategory',
+                                style: TextStyle(
+                                    fontSize: 12, color: Colors.grey[600]),
+                              ),
+                          ],
+                        ),
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             IconButton(
                               icon: const Icon(Icons.edit, color: Colors.blue),
                               onPressed: () => _updateProduct(
-                                product.id,
-                                product['name'],
-                                product['price'].toDouble(),
-                                product['category'],
+                                productId,
+                                productName,
+                                productPrice,
+                                productCategory,
                               ),
+                              tooltip: 'Edit',
                             ),
                             IconButton(
                               icon: const Icon(Icons.delete, color: Colors.red),
-                              onPressed: () => _deleteProduct(product.id),
+                              onPressed: () async {
+                                // cnfirm delete
+                                final confirm = await showDialog<bool>(
+                                  context: context,
+                                  builder: (context) => AlertDialog(
+                                    title: const Text('Delete Product'),
+                                    content: Text(
+                                        'Are you sure you want to delete "$productName"?'),
+                                    actions: [
+                                      TextButton(
+                                        onPressed: () =>
+                                            Navigator.pop(context, false),
+                                        child: const Text('Cancel'),
+                                      ),
+                                      TextButton(
+                                        onPressed: () =>
+                                            Navigator.pop(context, true),
+                                        child: const Text('Delete',
+                                            style:
+                                                TextStyle(color: Colors.red)),
+                                      ),
+                                    ],
+                                  ),
+                                );
+
+                                if (confirm == true) {
+                                  _deleteProduct(productId);
+                                }
+                              },
+                              tooltip: 'Delete',
                             ),
                           ],
                         ),
@@ -267,40 +604,9 @@ class _ProductListPageState extends State<ProductListPage> {
         ],
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: () {
-          _nameController.clear();
-          _priceController.clear();
-          _categoryController.clear();
-          showDialog(
-            context: context,
-            builder: (context) => AlertDialog(
-              title: const Text('Add Product'),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextField(
-                      controller: _nameController,
-                      decoration: const InputDecoration(labelText: 'Name')),
-                  TextField(
-                      controller: _priceController,
-                      decoration: const InputDecoration(labelText: 'Price'),
-                      keyboardType: TextInputType.number),
-                  TextField(
-                      controller: _categoryController,
-                      decoration: const InputDecoration(labelText: 'Category')),
-                ],
-              ),
-              actions: [
-                TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text('Cancel')),
-                ElevatedButton(
-                    onPressed: _addProduct, child: const Text('Add')),
-              ],
-            ),
-          );
-        },
+        onPressed: _showAddProductDialog,
         child: const Icon(Icons.add),
+        tooltip: 'Add Product',
       ),
     );
   }
